@@ -1,3 +1,9 @@
+# This script performs record linkage (duplicate detection) on the FEBRL-1 dataset using a combination of
+# traditional string similarity metrics and semantic similarity from SBERT embeddings. It blocks records 
+# based on given name prefixes to reduce comparisons, computes similarity features, and uses a supervised 
+# Logistic Regression model to classify record pairs as matches or non-matches. Finally, it evaluates 
+# model performance using precision, recall, and F1-score.
+
 import recordlinkage
 import pandas as pd
 import numpy as np
