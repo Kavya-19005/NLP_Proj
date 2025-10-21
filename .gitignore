@@ -1,0 +1,13 @@
+# Ignore virtual environment
+.venv/
+
+# Ignore compiled files
+__pycache__/
+*.pyc
+
+# Ignore temporary files
+tempCodeRunnerFile.py
+
+# Ignore system files
+.DS_Store
+Thumbs.db
