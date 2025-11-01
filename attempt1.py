@@ -4,7 +4,7 @@ import numpy as np
 from recordlinkage.datasets import load_febrl4
 from recordlinkage import precision, recall
 # Import ConnectedComponents for the final clustering step
-from recordlinkage.graph import ConnectedComponents 
+import networkx as nx
 from sentence_transformers import SentenceTransformer, util
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
@@ -66,31 +66,36 @@ model_rf.fit(X_train, y_train)
 predictions = model_rf.predict(features)
 final_matches = features.index[predictions] 
 
-# --- D. Clustering and Golden Record Selection (NEW CRITICAL STEP) ---
+# --- D. Clustering and Golden Record Selection (NEW CRITICAL STEP using networkx) ---
 
-# 1. Clustering: Use Connected Components (Transitive Closure)
-# This groups all indirectly linked records into a single cluster ID.
-cc = ConnectedComponents()
-# The clustering requires the indices of the full dataframes (df_combined indices)
-# and the actual matched pairs identified by the model.
-clusters = cc.get_clusters(df_combined.index, final_matches)
 
-# 2. Select Golden Record (Example Logic: Pick the record with the most complete data)
-# For simplicity, we'll define the Golden Record as the first record ID encountered in the cluster.
+# 1. Clustering: Use NetworkX (Transitive Closure)
+# Create a graph from the matched pairs
+G = nx.Graph()
+G.add_edges_from(final_matches)
+
+# Find connected components (clusters)
+clusters = list(nx.connected_components(G))
+
+# 2. Select Golden Record and Create Output
+# Your original selection logic remains the same, but adapted for networkx output.
 golden_records = []
-for cluster_id, record_ids in enumerate(clusters):
-    # Select the first record ID in the cluster as the canonical ID
-    canonical_id = record_ids[0]
-    
-    # Get the data for the canonical record
+# Note: clusters from networkx are sets of IDs, not tuples with cluster_id
+for cluster_id, record_ids_set in enumerate(clusters):
+    record_ids = list(record_ids_set)
+
+    # Select the record ID with the lowest string value as the canonical ID (arbitrary but consistent rule)
+    canonical_id = min(record_ids) 
+
+    # Get the data for the canonical record from the combined DataFrame
     canonical_record_data = df_combined.loc[canonical_id].copy()
-    
-    # Add a column for the Cluster/Canonical ID for tracking
+
+    # Add a column for the Canonical ID for tracking
     canonical_record_data['canonical_id'] = cluster_id
-    canonical_records.append(canonical_record_data)
+    golden_records.append(canonical_record_data)
 
 # Create the final DataFrame containing only the unique, non-duplicate Golden Records
-df_golden = pd.DataFrame(canonical_records)
+df_golden = pd.DataFrame(golden_records)
 
 # --- E. Final Output ---
 
