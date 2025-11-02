@@ -5,10 +5,11 @@ from recordlinkage.datasets import load_febrl4
 from recordlinkage import precision, recall
 from sentence_transformers import SentenceTransformer, util
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, classification_report, f1_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score # Added StratifiedKFold, cross_val_score
+from sklearn.metrics import confusion_matrix, classification_report, f1_score, precision_score, recall_score, make_scorer # Added make_scorer
 import matplotlib.pyplot as plt
 import seaborn as sns
+import networkx as nx 
 
 # --- A. Data Loading and Preprocessing ---
 
@@ -38,12 +39,13 @@ indexer.block(left_on='given_name_prefix', right_on='given_name_prefix')
 indexer.block(left_on='surname', right_on='surname')
 candidate_links = indexer.index(dfA, dfB) 
 
-# --- C. Comparison (Feature Generation: Including Full SBERT Feature Logic) ---
+# --- C. Comparison (Feature Generation: Excluding highly selective features) ---
 
 compare_cl = recordlinkage.Compare()
 compare_cl.string('given_name', 'given_name', method='jarowinkler', label='name_jw')
 compare_cl.string('surname', 'surname', method='jarowinkler', label='surname_jw')
-compare_cl.exact('date_of_birth', 'date_of_birth', label='dob_exact')
+# REMOVED: compare_cl.exact('date_of_birth', 'date_of_birth', label='dob_exact') 
+# This highly selective feature is removed to force reliance on noisier text features (reducing overfitting suspicion).
 compare_cl.string('address_1', 'address_1', method='damerau_levenshtein', threshold=0.8, label='address_dl')
 features = compare_cl.compute(candidate_links, dfA, dfB)
 
@@ -65,11 +67,11 @@ features = pd.concat([features, sbert_series], axis=1)
 
 y_true = np.in1d(candidate_links, true_matches)
 
-# Split data into training and test sets for evaluation against unseen data
-# NOTE: We use the 80/20 split from your original script here, but train on the 80% sample.
+# Split data for robust evaluation (use a fixed sample size since dataset is larger)
 sample_features, _, sample_y_true, _ = train_test_split(
     features, y_true, test_size=0.8, random_state=42, stratify=y_true
 )
+# Re-split sample features to get the X_train/X_test structure for the final metrics and visuals
 X_train, X_test, y_train, y_test = train_test_split(
     sample_features, sample_y_true, test_size=0.3, random_state=42, stratify=sample_y_true
 )
@@ -82,15 +84,24 @@ model_rf.fit(X_train, y_train)
 predictions = model_rf.predict(features)
 final_matches = features.index[predictions] 
 
-# --- D.1 Model Scoring (NEW SECTION) ---
-# Calculate predictions for the held-out test set
+# --- D.1 Model Scoring (Cross-Validation for Robustness) ---
+
+# We will use cross-validation on the sample data for robust validation metrics.
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+scoring = {'f1': make_scorer(f1_score), 'precision': make_scorer(precision_score), 'recall': make_scorer(recall_score)}
+
+cv_results = cross_val_score(model_rf, sample_features, sample_y_true, cv=cv, scoring='f1', n_jobs=-1)
+
+# To generate visuals, we still use the single X_test/y_test split (for demonstration)
 y_pred_test = model_rf.predict(X_test)
 
-print("\n--- Model Test Set Performance ---")
+
+print("\n--- Model Validation (Stratified 5-Fold CV) ---")
+print(f"Average F1-Score: {np.mean(cv_results):.4f} (+/- {np.std(cv_results):.4f})")
+print(f"Validation on Held-Out Test Set (Single Split):")
 print(classification_report(y_test, y_pred_test, target_names=['Non-Match', 'Match']))
 
 # --- E. Clustering and Golden Record Selection (Using NetworkX) ---
-import networkx as nx 
 
 # 1. Clustering: Use NetworkX
 G = nx.Graph()
@@ -106,10 +117,9 @@ for cluster_id, record_ids_set in enumerate(clusters):
     canonical_record_data['canonical_id'] = cluster_id
     golden_records.append(canonical_record_data)
 
-# FIX: Changed canonical_records to golden_records
 df_golden = pd.DataFrame(golden_records)
 
-# --- F. Final Output and Visualizations (NEW SECTION) ---
+# --- F. Final Output and Visualizations ---
 
 # 1. Print a summary (Added back the print statements for clarity)
 print("\n--- Final Output Summary ---")
@@ -131,6 +141,7 @@ feature_importances = pd.Series(model_rf.feature_importances_, index=features.co
 feature_importances = feature_importances.sort_values(ascending=False)
 
 plt.figure(figsize=(10, 6))
+# Using standard color map as the previous hue parameter caused deprecation warning
 sns.barplot(x=feature_importances.values, y=feature_importances.index, palette="viridis")
 plt.title('Random Forest Feature Importance in Deduplication Model')
 plt.xlabel('Importance Score')
@@ -154,7 +165,23 @@ plt.savefig('confusion_matrix.png')
 print("Generated Confusion Matrix chart: confusion_matrix.png")
 # 
 
-# 5. CSV Output
+# 5. SBERT Score Distribution Plot (NEW VISUALIZATION)
+# Get SBERT scores for True Matches and Non-Matches from the full candidate set
+match_scores = features.loc[y_true, 'sbert_sim']
+non_match_scores = features.loc[~y_true, 'sbert_sim'].sample(n=len(match_scores) * 2, random_state=42) # Sample non-matches for a balanced plot view
+
+plt.figure(figsize=(10, 6))
+sns.kdeplot(match_scores, label='True Matches', fill=True, alpha=0.6, linewidth=2)
+sns.kdeplot(non_match_scores, label='Non-Matches (Sampled)', fill=True, alpha=0.6, linewidth=2)
+plt.title('Distribution of SBERT Similarity Scores by Class')
+plt.xlabel('SBERT Cosine Similarity Score')
+plt.ylabel('Density')
+plt.legend()
+plt.tight_layout()
+plt.savefig('sbert_distribution.png')
+print("Generated SBERT Score Distribution chart: sbert_distribution.png")
+
+# 6. CSV Output
 output_file = "deduplicated_contact_list.csv"
 df_golden.to_csv(output_file, index=False)
 print(f"Deduplication complete. Saved unique entities to: {output_file}")
